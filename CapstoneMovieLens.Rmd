@@ -1,0 +1,648 @@
+---
+title: "MovieLens Project: Movie recommendation system"
+subtitle: "HarvardX PH125.9x Data Science: Capstone"
+author: "Priscila Trevino Aguilar"
+date: "December, 2020"
+geometry: margin=2cm
+output:
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE, fig.align='center', fig.height = 5, fig.width = 6)
+```
+
+\newpage
+
+# Acknowledgement
+I would like to thank professor Irrizary and the whole HarvardX staff for their superb work on this course, I was very pleased with the content and assignments and I consider that the capstone project did an excellent job of summarizing the skills learned and encouraging practice of the most relevant aspects of the course. Completing this capstone project was an exciting and challenging experience in my path to becoming a data scientist. 
+
+&nbsp; 
+
+# 1. Introduction
+
+The aim of this capstone project was to employ the R-programming and statistics skills obtained throughout the course as well as applying the learned machine learning techniques to create a movie recommendation system. A machine learning algorithm was trained to predict user movie ratings (0 to 5 stars) in a validation set using the inputs of a provided subset.
+
+The basic purpose of a recommendation system is to find and recommend items that a user is most likely to be interested in, they are commonly classified into two categories: content based methods, which are based on similarity of item attributes and collaborative methods, which calculate similarity from interactions. Modern systems usually combine both approaches. Recommendation systems have proven to be valuable means for online users to cope with the information overload and have become one of the most successful and widespread applications of machine learning technologies in business, their development is a multi-disciplinary effort which involves experts from other fields such as Human Computer Interaction, Information Technology, Data Mining, Statistics, Adaptive User Interfaces, Decision Support Systems, Marketing, and Consumer Behavior (Gorakala et al., 2015) (Ricci et al., 2011). 
+
+The data set employed in the present project is a publicly available and extensive (around 10 million) movie ratings version of the MovieLens data set developed by GroupLens, a research lab specializing in recommender systems, online communities, mobile and ubiquitous technologies, digital libraries, and local geographic information systems.
+
+The challenge presented in this capstone project was inspired by the Netflix challenge. In October 2006, Netflix offered a challenge to the data science community to improve their recommendation algorithm by 10% and win a million dollars. The approach taken by the challenge's winning team was collaborative filtering along with an ensemble of complex techniques and models (Irrizary, 2019), however, the methods employed in this project are more simple. First, pertinent data wrangling and exploratory data analysis were performed, followed by the creation of a simple naive model that assumed the same rating for all movies and users with all differences explained by random variation, the model was then modified by adding terms to account for the bias or effect introduced by the movie, user, genre and year variables. Regularization was also employed to come up with a final optimal model. The evaluation metric of choice for the models in this project was the root mean squared error (RMSE), a frequently used measure of the differences between values predicted by a model and the values observed. Finally, the random forest algorithm was also fit to data to evaluate its performance with such an extensive data set and its effectiveness compared to the generated final model.
+
+\newpage
+
+
+```{r required packages installation, echo=FALSE}
+
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")
+if(!require(data.table)) install.packages("data.table", repos = "http://cran.us.r-project.org")
+if(!require(dplyr)) install.packages("dplyr", repos = "http://cran.us.r-project.org")
+if(!require(ggthemes)) install.packages("ggthemes", repos = "http://cran.us.r-project.org")
+if(!require(ggsci)) install.packages("ggsci", repos = "http://cran.us.r-project.org")
+if(!require(lubridate)) install.packages("lubridate", repos = "http://cran.us.r-project.org")
+if(!require(knitr)) install.packages("knitr", repos = "http://cran.us.r-project.org")
+if(!require(scales)) install.packages("scales", repos = "http://cran.us.r-project.org")
+if(!require(randomForest)) install.packages("randomForest", repos = "http://cran.us.r-project.org")
+if(!require(params))install.packages("params", repos = "http://cran.us.r-project.org")
+if(!require(rmarkdown))install.packages("rmarkdown", repos = "http://cran.us.r-project.org")
+if(!require(tinytex))install.packages("tinytex", repos = "http://cran.us.r-project.org")
+```
+
+```{r required libraries loading, echo=FALSE}
+ 
+library(tidyverse)
+library(caret)
+library(data.table)
+library(dplyr)
+library(ggthemes)
+library(ggsci)
+library(lubridate)
+library(knitr)
+library(scales)
+library(randomForest)
+library(params)
+library(rmarkdown)
+library(tinytex)
+```
+
+```{r data loading and tidyng, echo=FALSE}
+
+dl <- tempfile()
+download.file("http://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)
+
+ratings <- fread(text = gsub("::", "\t", readLines(unzip(dl, "ml-10M100K/ratings.dat"))),
+                 col.names = c("userId", "movieId", "rating", "timestamp"))
+
+movies <- str_split_fixed(readLines(unzip(dl, "ml-10M100K/movies.dat")), "\\::", 3)
+colnames(movies) <- c("movieId", "title", "genres")
+
+movies <- as.data.frame(movies) %>% mutate(movieId = as.numeric(movieId),
+                                           title = as.character(title),
+                                           genres = as.character(genres))
+
+
+movielens <- left_join(ratings, movies, by = "movieId")
+
+# Validation set will be 10% of MovieLens data
+
+set.seed(1, sample.kind="Rounding")  
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)
+edx <- movielens[-test_index,]  #edx set creation
+temp <- movielens[test_index,]
+
+# Make sure userId and movieId in validation set are also in edx set
+
+validation <- temp %>%  # validation set creation
+  semi_join(edx, by = "movieId") %>%
+  semi_join(edx, by = "userId")
+
+# Add rows removed from validation set back into edx set
+removed <- anti_join(temp, validation)
+edx <- rbind(edx, removed)
+
+# Removal of objects from memory
+rm(dl, ratings, movies, test_index, temp, movielens, removed)
+```
+
+# 2. Methods
+
+## Exploratory data analysis 
+
+The structure of the data set showed that it contained 9000055 observations of both numeric and character variables and that it's multivariate.
+
+```{r structure}
+str(edx, width=80, strict.width="cut")
+```
+
+A look at summary and class of the variables gave a more clear idea of their properties and values. It was also observed that the data set contains 6 variables of interest: userId, the movieId, the movie rating, the timestamp, the movie title (which also contains the release year), and the movie genre(s). The movie rating was treated as the output variable in this case.
+
+```{r summary and class}
+summary(edx)
+sapply(edx, class)
+```
+
+The number of distinct users and movies rated were computed.
+
+```{r distinct users and movies}
+n_distinct(edx$userId)  # users
+n_distinct(edx$movieId)  # movies
+```
+
+The data set did not contain any NA values.
+
+```{r no NAs}
+any(is.na(edx))
+```
+
+
+There can be many different biases affecting movie ratings, however, on this project it was attempted to tackle the major ones according to the variables available in the data set. 
+
+&nbsp; 
+
+Table 1: Biases description
+
+Bias/effect               Description
+-----------------------   -------------------------------------------------------------------------------------------
+Movie bias                Movies might have extremely high or low ratings, and in general some movies have higher
+                          ratings than others
+User bias                 Some users might be more critical when rating movies than others
+Genre bias                The movie genre is significant because some movies might be more popular or considered 
+                          more consequential and thus receive higher ratings than others
+Year bias                 The release year of the movies is relevant because audiences perception and judgment
+                          changes over time
+-----------------------   --------------------------------------------------------------------------------------------
+
+\newpage
+
+Data visualization was performed to observe how the variables of interest could introduce bias into the model and thus justify their incorporation into the model. 
+
+The number of ratings per movie distribution was plotted below. It was observed that the distribution is approximately normal and a large portion of the movies are rated between 50 to 500 times. There are a few extremely low values, which effectively could add a disproportionate effect to movie rating prediction.   
+
+```{r movie rating histogram, echo=FALSE}
+
+edx %>%  # movie ratings distribution (movie effect)
+  count(movieId) %>%
+  ggplot(aes(n)) +
+  geom_histogram(bins=15, color="#6699CC", fill="#006669") +
+  scale_x_log10() +
+  xlab("Number of ratings") +
+  ylab("Movies") + 
+  ggtitle("Ratings per movie") + 
+  theme_economist() + 
+  theme(plot.title = element_text(size=14, face="bold", hjust=0.5),
+        axis.title.x = element_text(size=12, face="bold"),
+        axis.title.y = element_text(size=12, face="bold"),
+        axis.text.x = element_text(face="bold", size=10),
+        axis.text.y = element_text(face="bold", size=10))
+```
+
+Many recommender systems focus on the content items rather than focusing on the users, although both are important factors that may influence rating prediction. 
+
+\newpage
+
+The number of movie ratings given per user plot below showed that some users are more active than others and the ratings of those less active may bias the prediction.
+
+```{r user rating histogram, echo=FALSE}
+
+edx %>%  # user ratings distribution plot (user effect)
+  count(userId) %>%
+  ggplot(aes(n)) +
+  geom_histogram(bins=15, color="#6699CC", fill="#006669") +
+  scale_x_log10() +
+  xlab("Number of ratings") +
+  ylab("Users") + 
+  ggtitle("Ratings per users") + 
+  theme_economist() + 
+  theme(plot.title = element_text(size=14, face="bold", hjust=0.5),
+        axis.title.x = element_text(size=12, face="bold"),
+        axis.title.y = element_text(size=12, face="bold"),
+        axis.text.x = element_text(face="bold", size=10),
+        axis.text.y = element_text(face="bold", size=10))
+```
+
+Including this variable made sense since several recommender systems rely on user behaviour to make predictions. However, each type of system has its strengths and weaknesses, in some ocassions a large amount of information about a user is needed to make accurate recommendations. 
+
+\newpage
+
+The top ten most rated movie genres plotted below demonstrated that their popularity (number of ratings) is variable and that the genre may also introduce bias to the model.
+
+```{r most rated movie genres plot, echo=FALSE}
+
+genre_plot <- edx %>% 
+  separate_rows(genres, sep = "\\|") %>%  # genres separation 
+  group_by(genres) %>%
+  summarize(count = n()) %>%
+  arrange(desc(count)) %>% 
+  top_n(10)
+
+genre_plot %>%  # the top 10 most rated movie genres plot (genre effect)
+  ggplot(aes(x=reorder(genres, count), y=count)) + 
+  geom_bar(aes(fill=genres), stat = "identity") +
+  coord_flip() +  
+  theme_economist() + 
+  scale_fill_aaas() + 
+  ggtitle("Ratings per genre") +
+  ylab("Number of ratings") + 
+  theme(legend.position = "none",  
+        plot.title = element_text(size=14, face="bold", hjust=0.5),
+        axis.title.y = element_blank(),
+        axis.title.x = element_text(size=12, face="bold"),
+        axis.text.x = element_text(face="bold", size=10),
+        axis.text.y = element_text(face="bold", size=10))
+```
+
+The movie genre is relevant as it is provided by movie experts and directors, so an argument could be made that it is even more reliable than user ratings. 
+
+\newpage
+
+Rating given per movie release year was plotted below. It was observed that, in general, audiences have become more critical by giving lower ratings to movies, which could also have an effect on prediction. 
+
+```{r movie rating per year plot, echo=FALSE}
+
+year_plot <- edx %>% mutate(releaseYear = as.numeric(str_extract(str_extract(title, "[/(]\\d{4}[/)]$"), 
+                            regex("\\d{4}"))),
+                            title = str_remove(title, "[/(]\\d{4}[/)]$"))  # the year was extracted from...
+                                                                           # ... the title column 
+
+year_plot %>% group_by(releaseYear) %>%  # movie rating per release year plot (release year effect)
+  summarize(rating = mean(rating)) %>%
+  ggplot(aes(releaseYear, rating)) +
+  geom_point(color="#006669") +
+  geom_smooth(linetype="dashed", color="blue", fill="#99CCCC") + 
+  theme_economist() + 
+  ggtitle("Ratings per release year") + 
+  xlab("Release year") + 
+  ylab("Rating") + 
+  theme(plot.title = element_text(size=14, face="bold", hjust=0.5),
+        axis.title.x = element_text(size=12, face="bold"),
+        axis.title.y = element_text(size=12, face="bold"),
+        axis.text.x = element_text(face="bold", size=10),
+        axis.text.y = element_text(face="bold", size=10))
+```
+
+The model building and evaluation performed afterwards helped to elucidate whether these variables really had an effect on the movie rating prediction and how significant it was. 
+
+\newpage
+
+## Data wrangling
+
+While the movieId and userId variables were ready for analysis, it was necessary to separate the movie genres from each other and also extract the movie release year from the *title* column. A new column, *releaseYear* was created to store the year variable. Functions shown below were created for this purpose.
+
+```{r function for year extraction}
+# Function to extract the year variable
+year_sep <- function(z){
+  
+  z <- z %>% mutate(releaseYear = as.numeric(str_extract(str_extract(title, "[/(]\\d{4}[/)]$"), 
+                                                         regex("\\d{4}"))), 
+                    title = str_remove(title, "[/(]\\d{4}[/)]$"))
+}
+
+edx <- year_sep(edx)  # the function was applied to the edx and validation sets
+validation <- year_sep(validation)
+```
+
+
+```{r function for genre separation}
+# Function to separate the movie genres
+genre_sep <- function(x){
+  
+  x <- x %>% separate_rows(genres, sep = "\\|") 
+}
+
+edx <- genre_sep(edx)  # the function was applied to the edx and validation sets
+validation <- genre_sep(validation)
+
+
+# The sets were transformed back to data frames to facilitate analysis
+edx <- as.data.frame(edx) 
+validation <- as.data.frame(validation)
+```
+
+
+The head of the new data set ready for analysis is shown below.
+
+```{r new set head}
+head(edx)
+```
+
+\newpage
+
+## Modeling approach
+
+The evaluation metric chosen was the root mean squared error (RMSE), a commonly used metric that indicates the absolute fit of the model to the data, that is how close the observed data points are to the model’s predicted values. RMSE is a negatively-oriented score, which means that lower values are better, and it expresses average model prediction error in units of the variable of interest. The following code chunk shows a function to compute the RMSE of the models.
+
+```{r RMSE function}
+
+RMSE <- function(true_ratings, predicted_ratings){
+  sqrt(mean((true_ratings - predicted_ratings)^2))
+} 
+```
+
+Data partition to obtain train and test sets was performed.
+
+```{r data partition}
+set.seed(1)
+test_index <- createDataPartition(y = edx$rating, times = 1, p = 0.2, 
+                                    list = FALSE)
+test_set <- edx[test_index,]
+train_set <- edx[-test_index,]
+
+# Ensuring that the corresponding movieId and userIds are included in all sets
+test_set <- test_set %>%  
+    semi_join(train_set, by = "movieId") %>%
+    semi_join(train_set, by = "userId")
+  
+validation <- validation %>% 
+    semi_join(train_set, by = "movieId") %>%
+    semi_join(train_set, by = "userId")  
+```
+
+In machine learning, a naive model is a simple classification model that assumes little to nothing about the problem and the performance of which provides a baseline by which all other models evaluated on a data set can be compared.
+
+A naive model was computed for this issue (shown below), it simply predicted the same rating for all movies regardless of which movie or user. 
+
+```{r naive model}
+
+mu <- mean(train_set$rating)  # just the average
+
+result_mu <- RMSE(test_set$rating, mu)
+print(result_mu)  # result was computed and saved
+```
+
+As expected, its RMSE value is quite high, a little over 1 star away from the real rating, this certainly must be improved to a more accurate prediction.
+
+\newpage
+
+For a first model, the movie bias was taken into account by computing the estimated deviation of the movies' mean rating from the global mean rating (shown below). The same approach was taken with all the following effects considered to build the model. 
+
+```{r movie effect model}
+
+mu <- mean(train_set$rating)  
+movie_effect <- train_set %>%  
+  group_by(movieId) %>%      
+  summarize(b_m = mean(rating - mu))  # added movie effect
+
+model_1 <- test_set %>% 
+  left_join(movie_effect, by="movieId") %>%
+  mutate(pred = mu + b_m) %>% 
+  pull(pred)
+
+result_1 <- RMSE(test_set$rating, model_1)
+print(result_1)  # result was computed and saved
+```
+
+
+To further improve the model's RMSE, the user bias was accounted for along with the movie effect as shown in the following code chunk. 
+
+```{r movie + user effect model}
+
+user_effect <- train_set %>% 
+  left_join(movie_effect, by="movieId") %>%
+  group_by(userId) %>%     
+  summarize(b_u = mean(rating - mu - b_m))  # added user effect
+
+model_2 <- test_set %>% 
+  left_join(movie_effect, by="movieId") %>%
+  left_join(user_effect, by="userId") %>%
+  mutate(pred = mu + b_m + b_u) %>%
+  pull(pred)
+
+result_2 <- RMSE(test_set$rating, model_2)
+print(result_2)  # result was computed and saved
+```
+
+\newpage
+
+To continue improving the model, the movie genre was accounted for along with the movie and user effect. 
+
+```{r movie + user + genre effect model}
+
+genre_effect <- train_set %>% 
+  left_join(movie_effect, by="movieId") %>%
+  left_join(user_effect, by="userId") %>%
+  group_by(genres) %>% 
+  summarize(b_g = mean(rating - mu - b_m - b_u))  # added genre effect
+
+model_3 <- test_set %>% 
+  left_join(movie_effect, by="movieId") %>%
+  left_join(user_effect, by="userId") %>%
+  left_join(genre_effect, by="genres") %>%
+  mutate(pred = mu + b_m + b_u + b_g) %>%
+  pull(pred)
+
+result_3 <- RMSE(test_set$rating, model_3)
+print(result_3)  # result was computed and saved
+```
+
+Finally, as shown in the following code chunk, the movie release year bias was added to the model along with the movie, user and genre bias model. 
+
+```{r movie + user + genre + year effect model}
+
+year_effect <- train_set %>% 
+  left_join(movie_effect, by="movieId") %>%
+  left_join(user_effect, by="userId") %>%
+  left_join(genre_effect, by="genres") %>%
+  group_by(releaseYear) %>% 
+  summarize(b_y = mean(rating - mu - b_m - b_u - b_g))  # added release year effect
+
+model_4 <- test_set %>% 
+  left_join(movie_effect, by="movieId") %>%
+  left_join(user_effect, by="userId") %>%
+  left_join(genre_effect, by="genres") %>%
+  left_join(year_effect, by="releaseYear") %>%
+  mutate(pred = mu + b_m + b_u + b_g + b_y) %>%
+  pull(pred)
+
+result_4 <- RMSE(test_set$rating, model_4)
+print(result_4)  # result was computed and saved
+```
+
+\newpage
+
+To further improve the model, regularization was performed. Regularization is the process of adding information (a regularization term or penalty) to impose a cost on the optimization function to prevent overfitting and finding an optimal solution. In this case, regularization permitted to penalize the possible unequal aspects of the variables taken into account for the model (e.g. movies with very few ratings) which means it penalized large or noisy estimates that came from small sample sizes.
+
+In the following chunk code, a function was created to perform regularization on the test set first while simultaneously performing cross validation to obtain the optimal *lambda* value, which is a tuning parameter that determines the degree of regularization and is key in reducing the model's RMSE. 
+
+```{r regularization}
+
+lambdas <- seq(0, 10, 0.25) # tuning parameter range
+
+mu <- mean(train_set$rating)
+ 
+rmses <- sapply(lambdas, function(l){  # function to perform cross validation
+  
+  b_m <- train_set %>%  # adjust mean by penalizing movie effect
+    group_by(movieId) %>%
+    summarize(b_m = sum(rating - mu)/(n()+l))
+  
+  b_u <- train_set %>%  # adjust mean by penalizing movie and user effect
+    left_join(b_m, by="movieId") %>%
+    group_by(userId) %>%
+    summarize(b_u = sum(rating - b_m - mu)/(n()+l))
+  
+  b_g <- train_set %>%  # adjust mean by penalizing movie, user and genre effect
+    left_join(b_m, by="movieId") %>%
+    left_join(b_u, by="userId") %>%
+    group_by(genres) %>%
+    summarize(b_g = sum(rating - b_m - b_u - mu)/(n()+l))
+  
+  b_y <- train_set %>%  # adjust mean by penalizing movie, user, genre and year effect
+    left_join(b_m, by="movieId") %>%
+    left_join(b_u, by="userId") %>%
+    left_join(b_g, by="genres") %>%
+    group_by(releaseYear) %>%
+    summarize(b_y = sum(rating - b_m - b_u - b_g - mu)/(n()+l))
+  
+  predicted_ratings <- test_set %>%  # computed predictions
+    left_join(b_m, by = "movieId") %>%
+    left_join(b_u, by = "userId") %>%
+    left_join(b_g, by = "genres") %>%
+    left_join(b_y, by = "releaseYear") %>%
+    mutate(pred = mu + b_m + b_u + b_g + b_y) %>%
+    pull(pred)
+  
+  return(RMSE(test_set$rating, predicted_ratings))
+})
+```
+
+\newpage
+
+A plot of the lambdas vs RMSEs values was computed.
+
+```{r lambdas vs RMSEs plot}
+
+qplot(lambdas, rmses)  
+```
+
+The exact optimal lambda value was obtained through its index. 
+
+```{r optimal lambda}
+
+lambda <- lambdas[which.min(rmses)]  # optimal lambda value 
+print(lambda)
+```
+
+The regularization test and cross validation result was computed and saved. 
+
+```{r}
+
+result_reg <- min(rmses)
+print(result_reg) # cross validation test result was computed and saved 
+```
+
+\newpage
+
+The final hold-out test set (validation) using the optimal lambda value obtained was performed (shown below).
+
+```{r final test validation set}
+
+lambda <- 3.75 # optimal lambda value obtained in previous cross validation
+
+b_m <- train_set %>% 
+  group_by(movieId) %>%
+  summarize(b_m = sum(rating - mu)/(n()+lambda))
+
+b_u <- train_set %>% 
+  left_join(b_m, by="movieId") %>%
+  group_by(userId) %>%
+  summarize(b_u = sum(rating - b_m - mu)/(n()+lambda))
+
+b_g <- train_set %>% 
+  left_join(b_m, by="movieId") %>%
+  left_join(b_u, by="userId") %>%
+  group_by(genres) %>%
+  summarize(b_g = sum(rating - b_m - b_u - mu)/(n()+lambda))
+
+b_y <- train_set %>% 
+  left_join(b_m, by="movieId") %>%
+  left_join(b_u, by="userId") %>%
+  left_join(b_g, by="genres") %>%
+  group_by(releaseYear) %>%
+  summarize(b_y = sum(rating - b_m - b_u - b_g - mu)/(n()+lambda))
+
+predicted_ratings <- validation %>%  # only call for validation set, final test
+  left_join(b_m, by = "movieId") %>%
+  left_join(b_u, by = "userId") %>%   
+  left_join(b_g, by = "genres") %>%
+  left_join(b_y, by = "releaseYear") %>%
+  mutate(pred = mu + b_m + b_u + b_g + b_y) %>%
+  pull(pred)
+
+result_5 <- RMSE(validation$rating, predicted_ratings)
+print(result_5) # final model result was computed and saved
+```
+
+\newpage
+
+Finally, the random forest algorithm was fit to data to test another common machine learning approach. Random forest is a supervised learning algorithm that builds an ensemble of regression or classification trees, usually trained with the bagging method. The general idea of the bagging method is that a combination of learning models increases the overall result, in this case, the multiple trees obtained are merged to get a more accurate and stable prediction. The *randomForest* package was used.
+
+A smaller random sample subset of the data set (length of 10 thousand) was used, this approach was also attempted with the original data set as well as with larger subsets but it was simply impossible to compute given the RAM capacity of the equipment used. 
+
+A random sample without replacement of the edx data set was created.
+
+```{r sample from edx}
+
+mysample <- edx[sample(1:nrow(edx), 10000,  # a random sample sample of length 10 thousand...
+                       replace=FALSE),]     #... is taken from the edx set
+```
+
+A data partition of the sample was performed to create pertinent train and test sets for this analysis. 
+
+```{r data partition random forest}
+
+set.seed(1)
+test_index <- createDataPartition(y = mysample$rating, times = 1, p = 0.2, 
+                                  list = FALSE)  # data partition
+test_rf <- mysample[test_index,]  
+train_rf <-mysample[-test_index,] 
+
+test_rf <- test_rf %>% 
+  semi_join(train_rf, by = "movieId") %>% # ensuring that the corresponding movieId and ...
+  semi_join(train_rf, by = "userId")      # ... userIds are included in the test set
+```
+
+The *randomForest* function was used with the regression method as only the movieId and usedId variables were considered for prediction and the model's RMSE was computed.
+
+```{r random forest model}
+
+rf_model <- randomForest(rating ~ movieId + userId,  # random forest fit
+                           data = train_rf, 
+                           type = "regression", 
+                           proximity = TRUE)
+
+rf_pred <- predict(rf_model, test_rf)
+result_rf <- RMSE(test_rf$rating, rf_pred) 
+print(result_rf)  # result was computed and saved
+```
+
+\newpage
+
+## Results
+
+```{r results table, echo=FALSE}
+
+results_df <- data.frame(Model= c("Naive model",
+                                  "Movie effect", 
+                               "Movie + user effect", 
+                               "Movie + user + genre effect", 
+                               "Movie + user + genre + year effect", 
+                               "Regularized movie + user + genre + year cv test",
+                               "Regularized movie + user + genre + year validation final",
+                               "Random forest subset test"), 
+                          RMSE= c(result_mu, result_1, result_2, result_3, result_4, result_reg, result_5, result_rf))
+
+kable(results_df, caption = "Movielens rating prediction results")  # results table 
+```
+
+The results showed that the movie and user effects greatly improved the RMSE compared to the naive model. The genre and year effects, however, only had a slight impact. 
+The random forest attempt only slightly improved the RMSE of the naive model. Given the size of the data set and its multivariate nature, fitting other models would be a more extensive process and likely inefficient in some cases. It was also observed that its variable importance was consistent with the one observed in the algorithm that was built, the movie and user variables were practically equally important for prediction. 
+The final model generated with all the included biases plus regularization successfully predicted movie ratings in the __validation set__, achieving __a final RMSE of 0.8629447__. 
+
+
+(Gorakala et al., 2015) (Ricci et al., 2011) (Irrizary, 2019) (Kane, 2018)
+
+
+## Conclusion 
+This project's goal was quite a challenge, movie recommender systems are difficult because movie ratings can be influenced by several biases including subjective and social ones. The assignment of this project strongly established frequent machine learning issues like overfitting and the tradeoff between prediction accuracy and computational cost. Usually common machine learning algorithms are used for this problem, however, the obstacle in this case was the large size of the data set. Therefore, the real task at hand was to build a suitable algorithm that could break the data set into less extensive and more manageable subsets and rejoin them to create a model that mitigated the major biases. The final model generated on this project successfully predicted movie ratings in the validation set. The approach taken on this project was in accordance with the hardware and expertise limitations, however, further improvement could be achieved through more extensive model trial and error, data wrangling, different machine learning models fitting and other ensemble techniques. 
+
+\newpage
+
+## References
+Gorakala K and usuelli M. 2015. Building a recommendation system with R. Packt Publishing. 
+
+Ricci F, Rokach L, Shapira B, Kantor P.B. 2011. Recommender Systems Handbook. Springer. 
+
+Kane F. 2018. Building recommender systems with Machine Learning and AI. DBA Sundog Education. 
+
+Irizarry R.A. 2019. Introduction to data science. CRC Press.
+
+\newpage
+
+# Appendix 
+
+```{r}
+# Environment
+print("Operating System:")
+version
+```
